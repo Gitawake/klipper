@@ -4,8 +4,13 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, io
+import shutil
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
+
+sdcard_path_backup = ""
+subdir_path = ""
+
 
 class VirtualSD:
     def __init__(self, config):
@@ -15,6 +20,8 @@ class VirtualSD:
         # sdcard state
         sd = config.get('path')
         self.sdcard_dirname = os.path.normpath(os.path.expanduser(sd))
+        global sdcard_path_backup
+        sdcard_path_backup = self.sdcard_dirname
         self.current_file = None
         self.file_position = self.file_size = 0
         # Print Stat Tracking
@@ -58,7 +65,20 @@ class VirtualSD:
         if self.work_timer is None:
             return False, ""
         return True, "sd_pos=%d" % (self.file_position,)
-    def get_file_list(self, check_subdirs=False):
+    def get_file_list(self, check_subdirs=False, path=""):
+        global sdcard_path_backup
+        global subdir_path
+
+        if path == "system":
+            subdir_path = ""
+            self.sdcard_dirname = sdcard_path_backup + subdir_path
+        elif path != "":
+            if os.path.exists(sdcard_path_backup + path):
+                subdir_path = path
+                self.sdcard_dirname = sdcard_path_backup + subdir_path
+            else:
+                return []
+
         if check_subdirs:
             flist = []
             for root, dirs, files in os.walk(
@@ -167,9 +187,28 @@ class VirtualSD:
         filename = gcmd.get_raw_command_parameters().strip()
         if filename.startswith('/'):
             filename = filename[1:]
-        self._load_file(gcmd, filename)
+        if os.path.split(filename)[0].split(os.path.sep)[0] != ".cache":
+            homedir = os.path.expanduser("~")
+            base_path = os.path.join(homedir, "printer_data/gcodes")
+            target = os.path.join(".cache", os.path.basename(filename))
+            cache_path = os.path.join(base_path, ".cache")
+            if os.path.exists(cache_path):
+                shutil.rmtree(cache_path)
+            os.makedirs(cache_path)
+            self.copy_file_to_cache(os.path.join(self.sdcard_dirname, filename), os.path.join(base_path, target), gcmd)
+            filename = target
+        self._load_file(gcmd, filename, True)
+    def copy_file_to_cache(self, origin, target, gcmd):
+        stat = os.statvfs("/")
+        free_space = stat.f_frsize * stat.f_bfree
+        filesize = os.path.getsize(os.path.join(origin))
+        if (filesize < free_space - 50 * 1024 * 1024):
+            shutil.copy(origin, target)
+        else:
+            raise gcmd.error("Insufficient disk space, unable to load the file.")
     def _load_file(self, gcmd, filename, check_subdirs=False):
-        files = self.get_file_list(check_subdirs)
+        global sdcard_path_backup
+        files = self.get_file_list(check_subdirs, "system")
         flist = [f[0] for f in files]
         files_by_lower = { fname.lower(): fname for fname, fsize in files }
         fname = filename
